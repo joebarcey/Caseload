@@ -56,6 +56,19 @@ h2{font-size:13px;text-transform:uppercase;letter-spacing:.08em;color:var(--dim)
 .stat{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:12px;text-align:left}
 .stat b{display:block;font-size:26px;letter-spacing:-.02em}
 .stat span{font-size:12.5px;color:var(--dim)}
+.rcard{border-left-width:5px}
+.rcard.u-grn{border-left-color:var(--green)}
+button.pill.tp{border:0;font-family:inherit;font-size:12.5px;padding:6px 10px;cursor:pointer}
+button.pill.tp:active{transform:scale(.95)}
+.rcard.u-red{border-left-color:var(--red)} .rcard.u-amb{border-left-color:var(--amber)} .rcard.u-blue{border-left-color:var(--blue)}
+.rcard.u-red .rhead{background:var(--red-soft)} .rcard.u-amb .rhead{background:var(--amber-soft)}
+.prog{height:6px;background:var(--line);margin:0 14px;border-radius:99px;overflow:hidden}
+.prog div{height:100%;background:var(--green);border-radius:99px}
+.progtxt{font-size:12px;color:var(--dim);font-weight:600;padding:5px 14px 8px}
+.row.faded .t{color:var(--dim);text-decoration:line-through}
+button.stat{font:inherit;color:inherit;width:100%;cursor:pointer;position:relative}
+button.stat:active{transform:scale(.97)}
+button.stat i{position:absolute;top:10px;right:12px;font-style:normal;color:var(--dim);font-size:18px;line-height:1}
 .stat.red b{color:var(--red)} .stat.amb b{color:var(--amber)} .stat.grn b{color:var(--green)}
 .btn{border:0;border-radius:12px;padding:12px 16px;font-weight:650;background:var(--accent);color:var(--card)}
 .btn.ghost{background:var(--accent-soft);color:var(--accent)}
@@ -104,14 +117,25 @@ var KEY="caseload-v1";
 var TASKS=[
   {k:"loc",name:"LOC",open:90,due:20,hint:"Can start 90 days before span"},
   {k:"aai",name:"AAI/DDP",open:60,due:20,hint:"Can start 60 days before span"},
+  {k:"meet",name:"Meeting",open:90,due:60,hint:"Hold the meeting 60–90 days before span"},
   {k:"pas",name:"PAS",open:90,due:45,hint:"Must be done 45 days before span"},
+  {k:"chg",name:"Changes",open:90,due:45,after:"meet",hint:"Make changes after the meeting, before signatures"},
+  {k:"sig",name:"Signatures",open:90,due:30,after:"chg",hint:"Get signatures after changes, before Finalize"},
   {k:"fin",name:"Finalize",open:45,due:20,hint:"Must be done 20 days before span"}
+];
+var RTASKS=[
+  {k:"chg",name:"Make changes",days:7},
+  {k:"sos",name:"SOS",days:14},
+  {k:"sig",name:"Signatures",days:14},
+  {k:"pub",name:"Publish",days:21}
 ];
 var TYPES={H:"Home",D:"Day program",C:"Community"};
 
 /* ---------- storage ---------- */
-var DB={clients:[],visits:[],done:{},settings:{remind:3}};
-function load(){try{var v=localStorage.getItem(KEY);if(v){var d=JSON.parse(v);DB.clients=d.clients||[];DB.visits=d.visits||[];DB.done=d.done||{};DB.settings=Object.assign({remind:3},d.settings||{});}}catch(e){}}
+var DB={clients:[],visits:[],done:{},revs:[],settings:{remind:3}};
+function load(){try{var v=localStorage.getItem(KEY);if(v){var d=JSON.parse(v);DB.clients=d.clients||[];DB.visits=d.visits||[];DB.done=d.done||{};DB.revs=d.revs||[];DB.settings=Object.assign({remind:3},d.settings||{});}}catch(e){}upgrade()}
+/* new paperwork steps: if Finalize was already checked, the steps before it were too */
+function upgrade(){var ch=false;Object.keys(DB.done).forEach(function(k){if(/\|fin$/.test(k)){var b=k.slice(0,-3);["meet","chg","sig"].forEach(function(x){if(!DB.done[b+x]){DB.done[b+x]=DB.done[k];ch=true}})}});if(!DB.revs)DB.revs=[];if(ch)save()}
 function save(){try{localStorage.setItem(KEY,JSON.stringify(DB));}catch(e){toast("Couldn't save on this phone");}}
 
 /* ---------- dates ---------- */
@@ -142,7 +166,9 @@ function paperwork(c,t){
   return TASKS.map(function(T){
     var key=c.id+"|"+si+"|"+T.k,opens=add(S,-T.open),due=add(S,-T.due),done=DB.done[key];
     var st=done?"done":(t>due?"overdue":(t>=opens?"open":"later"));
-    return {kind:"pw",c:c,T:T,key:key,span:S,opens:opens,due:due,done:done,st:st,daysDue:diff(t,due),daysOpen:diff(t,opens)};
+    var wait=(st==="open"&&T.after&&!DB.done[c.id+"|"+si+"|"+T.after])?TASKS.find(function(x){return x.k===T.after}).name:"";
+    if(wait)st="later";
+    return {kind:"pw",c:c,T:T,key:key,span:S,opens:opens,due:due,done:done,st:st,wait:wait,daysDue:diff(t,due),daysOpen:wait?0:diff(t,opens)};
   });
 }
 function visitsFor(cid){return DB.visits.filter(function(v){return v.cid===cid}).sort(function(a,b){return a.date<b.date?1:-1})}
@@ -158,6 +184,19 @@ function visitReqs(c,t){
   out.forEach(function(r){r.daysDue=diff(t,r.due)});
   return out;
 }
+function revItems(rv,t){
+  var c=DB.clients.find(function(x){return x.id===rv.cid})||{id:rv.cid,name:"(deleted client)"},S=parse(rv.start);
+  return RTASKS.map(function(R){
+    var due=add(S,R.days),done=rv.done[R.k],dd=diff(t,due);
+    return {kind:"rv",rv:rv,c:c,R:R,key:rv.id+"|"+R.k,due:due,done:done,daysDue:dd,st:done?"done":dd<0?"overdue":"open"};
+  });
+}
+function revDone(rv){return RTASKS.every(function(R){return rv.done[R.k]})}
+function urg(d){return d<0?"p-red":d<=3?"p-amb":"p-blue"}
+function revScore(rv,t){var s=0;revItems(rv,t).forEach(function(i){if(!i.done)s=Math.max(s,i.daysDue<0?3:i.daysDue<=3?2:1)});return s}
+function revNext(rv,t){return revItems(rv,t).filter(function(i){return !i.done})[0]}
+function revByKey(key){var p=key.split("|"),rv=DB.revs.find(function(x){return x.id===p[0]});if(!rv)return null;
+  return revItems(rv,today()).find(function(x){return x.R.k===p[1]})}
 function clientFlag(c,t){
   var worst=0;
   paperwork(c,t).forEach(function(p){if(p.st==="overdue")worst=Math.max(worst,3);else if(p.st==="open"&&p.daysDue<=14)worst=Math.max(worst,2)});
@@ -166,14 +205,16 @@ function clientFlag(c,t){
 }
 
 /* ---------- state ---------- */
-var V={tab:"todo",client:null,cview:"client",q:"",vq:""};
+var V={tab:"todo",client:null,cview:"client",q:"",vq:"",need:null};
 var nav=document.getElementById("nav"),app=document.getElementById("app"),layer=document.getElementById("layer");
 
 function render(){
-  nav.innerHTML=[["todo","✓","To Do"],["clients","👥","Clients"],["visits","🏠","Visits"],["settings","⚙︎","Settings"]].map(function(b){
+  nav.innerHTML=[["todo","✓","To Do"],["clients","👥","Clients"],["revs","📝","Revisions"],["visits","🏠","Visits"],["settings","⚙︎","Settings"]].map(function(b){
     return '<button data-a="tab" data-v="'+b[0]+'" class="'+(V.tab===b[0]&&!V.client?"on":"")+'"><i>'+b[1]+'</i>'+b[2]+'</button>'}).join("");
   if(V.client){app.innerHTML=V.cview==="visits"?visitDetailView():detailView();return}
-  app.innerHTML=V.tab==="todo"?todoView():V.tab==="clients"?clientsView():V.tab==="visits"?visitsView():settingsView();
+  if(V.need&&V.tab==="visits"){app.innerHTML=needView();return}
+  if(V.rev&&V.tab==="revs"){app.innerHTML=revDetailView();return}
+  app.innerHTML=V.tab==="todo"?todoView():V.tab==="clients"?clientsView():V.tab==="visits"?visitsView():V.tab==="revs"?revsView():settingsView();
 }
 
 /* ---------- To Do ---------- */
@@ -183,14 +224,22 @@ function todoItems(t){
     paperwork(c,t).forEach(function(p){if(p.st!=="done"&&p.daysOpen<=30)items.push(p)});
     visitReqs(c,t).forEach(function(r){if(!r.met&&r.daysDue<=60)items.push(r)});
   });
+  DB.revs.forEach(function(rv){revItems(rv,t).forEach(function(i){if(!i.done)items.push(i)})});
   items.sort(function(a,b){return a.due-b.due||a.c.name.localeCompare(b.c.name)});
   return items;
 }
 function itemRow(it,t){
   var c=it.c,head='<b>'+esc(c.name)+'</b> · ';
+  if(it.kind==="rv"){
+    return '<div class="row"><button class="chkwrap" data-a="rcheck" data-v="'+it.key+'" aria-label="Mark done"><span class="chk"></span>Done</button>'+
+      '<button class="tap main" data-a="openr" data-v="'+it.rv.id+'"><div class="t">'+head+esc(it.R.name)+'</div>'+
+      '<div class="s">Revision started '+fmt(it.rv.start)+'</div><div class="dots"><span class="pill '+urg(it.daysDue)+'">'+
+      (it.daysDue<0?Math.abs(it.daysDue)+'d overdue':'due '+inDays(it.daysDue))+'</span><span class="pill p-dim">Revision</span></div></button>'+
+      '<button class="icon" data-a="icsr" data-v="'+it.key+'" aria-label="Add reminder">🔔</button></div>';
+  }
   if(it.kind==="pw"){
     var pill=it.st==="overdue"?'<span class="pill p-red">'+Math.abs(it.daysDue)+'d overdue</span>':
-      it.st==="later"?'<span class="pill p-dim">opens '+fmt(it.opens)+'</span>':
+      it.st==="later"?'<span class="pill p-dim">'+(it.wait?"after "+it.wait:"opens "+fmt(it.opens))+'</span>':
       '<span class="pill '+(it.daysDue<=14?"p-amb":"p-blue")+'">due '+inDays(it.daysDue)+'</span>';
     return '<div class="row"><button class="chkwrap" data-a="check" data-v="'+it.key+'" aria-label="Mark done"><span class="chk"></span>Done</button>'+
       '<button class="tap main" data-a="open" data-v="'+c.id+'"><div class="t">'+head+esc(it.T.name)+'</div>'+
@@ -268,6 +317,70 @@ function visitScore(c,t){
   return s;
 }
 
+/* ---------- Revisions ---------- */
+function revCard(rv,t){
+  var it=revItems(rv,t),n=it.filter(function(i){return i.done}).length,sc=revScore(rv,t);
+  var rows=it.map(function(i){
+    var pill=i.done?'<span class="pill p-green">✓ Done '+fmt(i.done)+'</span>':
+      '<span class="pill '+urg(i.daysDue)+'">'+(i.daysDue<0?Math.abs(i.daysDue)+'d overdue':'due '+inDays(i.daysDue))+'</span>';
+    return '<div class="row'+(i.done?' faded':'')+'"><button class="chkwrap" data-a="'+(i.done?"runcheck":"rcheck")+'" data-v="'+i.key+'"><span class="chk'+(i.done?" on":"")+'">'+(i.done?"✓":"")+'</span>'+(i.done?"Undo":"Done")+'</button>'+
+      '<div class="main"><div class="t">'+i.R.name+'</div><div class="s">Due '+fmt(i.due)+' · '+(i.R.days/7)+' week'+(i.R.days>7?"s":"")+' from start</div><div class="dots">'+pill+'</div></div>'+
+      (i.done?'':'<button class="icon" data-a="icsr" data-v="'+i.key+'" aria-label="Add reminder">🔔</button>')+'</div>';
+  }).join("");
+  return '<div class="card rcard '+(revDone(rv)?"u-grn":sc===3?"u-red":sc===2?"u-amb":"u-blue")+'"><div class="prog" style="margin-top:12px"><div style="width:'+(n*25)+'%"></div></div><div class="progtxt">'+n+' of 4 done</div>'+rows+'</div>';
+}
+function revsView(){
+  var t=today();
+  if(!DB.clients.length)return welcome();
+  var active=DB.revs.filter(function(rv){return !revDone(rv)}).sort(function(a,b){
+    return revScore(b,t)-revScore(a,t)||(revNext(a,t).due-revNext(b,t).due)});
+  var fin=DB.revs.filter(revDone).sort(function(a,b){return a.done.pub<b.done.pub?1:-1});
+  var over=0,week=0;active.forEach(function(rv){revItems(rv,t).forEach(function(i){if(!i.done){if(i.daysDue<0)over++;else if(i.daysDue<=7)week++}})});
+  function rowsOf(arr){return arr.map(function(rv){
+    var it=revItems(rv,t),c=it[0].c,sc=revScore(rv,t),nx=revNext(rv,t);
+    var tag=sc===3?'<span class="pill p-red">Overdue</span>':sc===2?'<span class="pill p-amb">Due soon</span>':'';
+    var pills=it.map(function(i){
+      var cls=i.done?"p-green":i.daysDue<0?"p-red":i.daysDue<=3?"p-amb":"p-dim";
+      return '<button class="pill tp '+cls+'" data-a="'+(i.done?"runcheck":"rcheck")+'" data-v="'+i.key+'">'+(i.done?"✓ ":"")+i.R.name+'</button>'}).join("");
+    var sub=nx?"Next: "+nx.R.name+" "+(nx.daysDue<0?Math.abs(nx.daysDue)+"d overdue":"due "+inDays(nx.daysDue)):"Published "+fmt(rv.done.pub);
+    return '<div class="row"><div class="av">'+esc(c.name.charAt(0))+'</div><div class="main">'+
+      '<button class="tap" data-a="openr" data-v="'+rv.id+'" style="display:block;width:100%;text-align:left;padding:0;background:none;border:0">'+
+      '<div class="t">'+esc(c.name)+' <span style="color:var(--dim);font-weight:500">· started '+fmt(rv.start)+'</span></div>'+
+      '<div class="s">'+sub+(rv.note?' · '+esc(rv.note):'')+'</div></button>'+
+      '<div class="dots">'+tag+pills+'</div></div><button class="icon" data-a="openr" data-v="'+rv.id+'" aria-label="Open" style="font-size:22px;color:var(--dim)">›</button></div>';
+  }).join("")}
+  return '<div class="hdr"><div><h1>Revisions</h1><div class="sub">'+active.length+' in progress · finished at the bottom</div></div>'+
+    '<button class="btn small" data-a="addr" style="margin-top:8px">+ Add</button></div>'+
+    '<div class="stats"><div class="stat red"><b>'+over+'</b><span>Overdue</span></div><div class="stat amb"><b>'+week+'</b><span>Due this week</span></div>'+
+    '<div class="stat grn"><b>'+active.length+'</b><span>In progress</span></div></div>'+
+    (active.length?'<h2>To do · '+active.length+'</h2><div class="card">'+rowsOf(active)+'</div>':
+      '<div class="card" style="margin-top:18px"><div class="empty">No revisions in progress. Tap <b>+ Add</b> when one comes in.</div></div>')+
+    (fin.length?'<h2>All green · '+fin.length+'</h2><div class="card">'+rowsOf(fin)+'</div>':'')+
+    '<p class="note" style="margin-top:14px">Tap a step to check it off. From the start date: Make changes in 1 week, SOS and Signatures in 2 weeks, Publish in 3 weeks.</p>';
+}
+function revDetailView(){
+  var t=today(),rv=DB.revs.find(function(x){return x.id===V.rev});
+  if(!rv){V.rev=null;return revsView()}
+  var c=revItems(rv,t)[0].c;
+  return '<button class="back" data-a="closer">‹ Revisions</button>'+
+    '<div class="hdr"><div><h1>'+esc(c.name)+'</h1><div class="sub">Revision started '+fmt(rv.start)+' · publish by '+fmt(add(parse(rv.start),21))+(rv.note?'<br>'+esc(rv.note):'')+'</div></div>'+
+    '<button class="btn small ghost" data-a="editr" data-v="'+rv.id+'" style="margin-top:8px">Edit</button></div>'+
+    revCard(rv,t)+
+    (c.id&&DB.clients.some(function(x){return x.id===c.id})?'<button class="btn ghost wide" data-a="open" data-v="'+c.id+'">See '+esc(c.name)+'\'s paperwork ›</button>':'');
+}
+function revSheet(rv,cid){
+  var n=!rv;rv=rv||{id:"",cid:cid||"",start:iso(today()),note:"",done:{}};
+  var list=DB.clients.slice().sort(function(a,b){return a.name.localeCompare(b.name)});
+  sheet('<h3>'+(n?"Start a revision":"Edit revision")+'</h3>'+
+    '<label>Client</label><select class="field" id="rcid">'+(n&&!rv.cid?'<option value="">Pick a client…</option>':'')+list.map(function(c){
+      return '<option value="'+c.id+'"'+(c.id===rv.cid?" selected":"")+'>'+esc(c.name)+'</option>'}).join("")+'</select>'+
+    (n?'<button class="btn small ghost" data-a="addcr" style="margin-top:8px">+ New client</button>':'')+
+    '<label>Start date</label><input type="date" class="field" id="rstart" value="'+rv.start+'">'+
+    '<label>Note (optional)</label><input class="field" id="rnote" value="'+esc(rv.note||"")+'" placeholder="What\'s changing?">'+
+    '<div class="actions"><button class="btn ghost" data-a="cancel">Cancel</button><button class="btn" data-a="saver" data-v="'+rv.id+'">'+(n?"Start":"Save")+'</button></div>'+
+    (n?'':'<button class="btn danger wide" data-a="delr" data-v="'+rv.id+'">Delete revision</button>'));
+}
+
 /* ---------- Visits ---------- */
 function reqPills(rq){return rq.map(function(r){return '<span class="pill '+(r.met?"p-green":r.daysDue<=14?"p-amb":"p-dim")+'">'+(r.met?"✓ ":"")+(r.r==="Q"?"Qtr":r.r==="H"?"Home":"Day")+'</span>'}).join("")}
 function visitsView(){
@@ -286,12 +399,26 @@ function visitsView(){
   var need=list.filter(function(c){return visitScore(c,t)>0}),good=list.filter(function(c){return visitScore(c,t)===0});
   return '<h1>Visits</h1><div class="sub">'+P.q.label+' ends '+fmt(P.q.e)+' · '+inDays(diff(t,P.q.e))+'</div>'+
     '<div class="stats"><div class="stat grn"><b>'+seen+'/'+DB.clients.length+'</b><span>Seen in '+P.q.label+'</span></div>'+
-    '<div class="stat amb"><b>'+homeNeed+'</b><span>Need home visit</span></div><div class="stat amb"><b>'+dayNeed+'</b><span>Need day visit</span></div></div>'+
+    '<button class="stat amb" data-a="need" data-v="H"><i>›</i><b>'+homeNeed+'</b><span>Need home visit</span></button><button class="stat amb" data-a="need" data-v="D"><i>›</i><b>'+dayNeed+'</b><span>Need day visit</span></button></div>'+
     '<button class="btn wide" data-a="pick">+ Log a visit</button>'+
     '<input class="search" id="vq" placeholder="Search clients" value="'+esc(V.vq)+'" style="margin-top:14px">'+
     (need.length?'<h2>Still need a visit · '+need.length+'</h2><div class="card">'+rowsOf(need)+'</div>':'')+
     (good.length?'<h2>All green · '+good.length+'</h2><div class="card">'+rowsOf(good)+'</div>':'')+
     (list.length?'':'<div class="card"><div class="empty">No clients found.</div></div>');
+}
+function needView(){
+  var t=today(),P=periods(t),k=V.need,per=k==="H"?P.h:P.y,word=k==="H"?"home":"day program";
+  var list=DB.clients.filter(function(c){return (k==="H"||c.dayProgram)&&!seenIn(visitsFor(c.id),per.s,per.e,k)})
+    .sort(function(a,b){return a.name.localeCompare(b.name)});
+  var days=diff(t,per.e),pill='<span class="pill '+(days<0?"p-red":days<=14?"p-amb":"p-blue")+'">by '+fmt(per.e)+' · '+inDays(days)+'</span>';
+  var rows=list.map(function(c){
+    var last=visitsFor(c.id).filter(function(v){return v.types.indexOf(k)>=0})[0];
+    return '<div class="row"><button class="tap main" data-a="openv" data-v="'+c.id+'" style="display:flex;gap:12px;align-items:center"><div class="av">'+esc(c.name.charAt(0))+'</div><div style="min-width:0">'+
+      '<div class="t">'+esc(c.name)+'</div><div class="s">'+(last?"Last "+word+" visit "+fmt(last.date):"No "+word+" visit logged")+'</div><div class="dots">'+pill+'</div></div></button>'+
+      '<button class="btn small ghost" data-a="log" data-v="'+c.id+'" data-t="'+k+'">Log</button></div>'}).join("");
+  return '<button class="back" data-a="needclose">‹ Visits</button>'+
+    '<h1>Need '+(k==="H"?"home":"day")+' visit</h1><div class="sub">'+list.length+' client'+(list.length===1?"":"s")+' · due by '+fmt(per.e)+'</div>'+
+    (list.length?'<div class="card">'+rows+'</div>':'<div class="card"><div class="empty">Everyone\'s had their '+word+' visit. Nice work. 🎉</div></div>');
 }
 function visitDetailView(){
   var t=today(),c=DB.clients.find(function(x){return x.id===V.client});
@@ -330,6 +457,7 @@ function detailView(){
     if(p.st==="done"){s="Done "+fmt(p.done);pill='<span class="pill p-green">Done</span>'}
     else if(p.st==="overdue"){s="Was due "+fmt(p.due);pill='<span class="pill p-red">'+Math.abs(p.daysDue)+'d overdue</span>'}
     else if(p.st==="open"){s="Window open · due "+fmt(p.due);pill='<span class="pill '+(p.daysDue<=14?"p-amb":"p-blue")+'">due '+inDays(p.daysDue)+'</span>'}
+    else if(p.wait){s="After "+p.wait+" · due "+fmt(p.due);pill='<span class="pill p-dim">after '+p.wait+'</span>'}
     else{s="Opens "+fmt(p.opens)+" · due "+fmt(p.due);pill='<span class="pill p-dim">opens '+inDays(p.daysOpen)+'</span>'}
     return '<div class="row"><button class="chkwrap" data-a="'+(p.done?"uncheck":"check")+'" data-v="'+p.key+'"><span class="chk'+(p.done?" on":"")+'">'+(p.done?"✓":"")+'</span>'+(p.done?"Undo":"Done")+'</button>'+
       '<div class="main"><div class="t">'+p.T.name+'</div><div class="s">'+s+'</div><div class="dots">'+pill+'</div></div>'+
@@ -348,8 +476,17 @@ function detailView(){
     '<div class="hdr"><div><h1>'+esc(c.name)+'</h1><div class="sub">'+esc(c.level)+' · next span '+fmt(cycleSpan(c,t))+(c.dayProgram?" · attends day program":" · no day program")+'</div></div>'+
     '<button class="btn small ghost" data-a="editc" data-v="'+c.id+'" style="margin-top:8px">Edit</button></div>'+
     (c.notes?'<div class="card"><div class="row"><div class="main"><div class="s" style="margin:0">'+esc(c.notes)+'</div></div></div></div>':'')+
+    revBlock(c,t)+
     '<h2>Annual paperwork · span '+fmt(cycleSpan(c,t))+'</h2><div class="card">'+pwRows+'</div>'+
     '<button class="btn ghost wide" data-a="openv" data-v="'+c.id+'">See visits for '+esc(c.name)+' ›</button>';
+}
+
+function revBlock(c,t){
+  var rs=DB.revs.filter(function(rv){return rv.cid===c.id&&!revDone(rv)});
+  if(!rs.length)return "";
+  return '<h2>Revision in progress</h2><div class="card">'+rs.map(function(rv){var nx=revNext(rv,t);
+    return '<button class="row tap" data-a="openr" data-v="'+rv.id+'"><div class="main"><div class="t">Next: '+nx.R.name+'</div><div class="s">Started '+fmt(rv.start)+'</div>'+
+      '<div class="dots"><span class="pill '+urg(nx.daysDue)+'">'+(nx.daysDue<0?Math.abs(nx.daysDue)+'d overdue':'due '+inDays(nx.daysDue))+'</span></div></div><span style="color:var(--dim);font-size:20px">›</span></button>'}).join("")+'</div>';
 }
 
 /* ---------- Settings ---------- */
@@ -361,8 +498,9 @@ function settingsView(){
     '<h2>Backup</h2><div class="card"><div class="row"><div class="main"><div class="t">Save a backup</div><div class="s">Downloads a file with all clients and visits. Keep it somewhere safe.</div></div><button class="btn small" data-a="export">Save</button></div>'+
     '<div class="row"><div class="main"><div class="t">Load a file</div><div class="s">Replaces what\'s on this phone with a backup or client file.</div></div><button class="btn small ghost" data-a="import">Load</button></div></div>'+
     '<h2>The rules this app uses</h2><div class="card"><div class="row"><div class="main"><div class="s" style="margin:0;line-height:1.5">'+
-    '<b>LOC</b> can start 90 days before span.<br><b>AAI/DDP</b> can start 60 days before span.<br><b>PAS</b> must be done 45 days before span.<br>'+
-    '<b>Finalize</b> must be done 20 days before span.<br><b>Home visit</b> once every 6 months (Jan–Jun and Jul–Dec).<br>'+
+    '<b>LOC</b> can start 90 days before span.<br><b>AAI/DDP</b> can start 60 days before span.<br><b>Meeting</b> 60–90 days before span.<br>'+
+    '<b>PAS</b> must be done 45 days before span.<br><b>Changes</b> after the meeting, by 45 days before span.<br><b>Signatures</b> after changes, by 30 days before span.<br>'+
+    '<b>Finalize</b> must be done 20 days before span.<br><b>Revisions:</b> Make changes in 1 week, SOS and Signatures in 2 weeks, Publish in 3 weeks from the start date.<br><b>Home visit</b> once every 6 months (Jan–Jun and Jul–Dec).<br>'+
     '<b>Day program visit</b> once a year, only if they attend.<br><b>Goal:</b> see everyone once a quarter (any visit counts).</div></div></div></div>'+
     '<h2>Danger zone</h2><button class="btn danger wide" data-a="wipe">Erase everything on this phone</button>'+
     '<p class="note" style="margin-top:14px">First names only. Last initials are OK.</p>';
@@ -409,11 +547,12 @@ function sendIcs(events,name){
 function pwByKey(key){var p=key.split("|"),c=DB.clients.find(function(x){return x.id===p[0]});if(!c)return null;
   return paperwork(c,today()).find(function(x){return x.key===key})}
 function evForPw(p){return icsEvent(p.key.replace(/\|/g,"-"),p.due,p.T.name+" due – "+p.c.name,"Span "+fmt(p.span)+". "+p.T.hint+".")}
+function evForRv(i){return icsEvent(i.key.replace(/\|/g,"-"),i.due,i.R.name+" (revision) – "+i.c.name,"Revision started "+fmt(i.rv.start)+".")}
 function evForVr(r){return icsEvent(r.c.id+"-"+r.r+"-"+iso(r.due),r.due,r.name+" – "+r.c.name,"Visit needed by "+fmt(r.due)+".")}
 
 /* ---------- files ---------- */
 function exportData(){
-  var blob=new Blob([JSON.stringify({app:"caseload",version:1,clients:DB.clients,visits:DB.visits,done:DB.done,settings:DB.settings},null,1)],{type:"application/json"});
+  var blob=new Blob([JSON.stringify({app:"caseload",version:1,clients:DB.clients,visits:DB.visits,done:DB.done,revs:DB.revs,settings:DB.settings},null,1)],{type:"application/json"});
   var a=document.createElement("a");a.href=URL.createObjectURL(blob);a.download="caseload-backup-"+iso(today())+".json";
   document.body.appendChild(a);a.click();a.remove();toast("Backup saved");
 }
@@ -422,7 +561,7 @@ function importData(){
   inp.onchange=function(){var f=inp.files[0];if(!f)return;var rd=new FileReader();rd.onload=function(){
     try{var d=JSON.parse(rd.result);if(!d.clients)throw 0;
       if(DB.clients.length&&!confirm("Replace the "+DB.clients.length+" clients on this phone with this file?"))return;
-      DB.clients=d.clients;DB.visits=d.visits||[];DB.done=d.done||{};if(d.settings)DB.settings=Object.assign(DB.settings,d.settings);
+      DB.clients=d.clients;DB.visits=d.visits||[];DB.done=d.done||{};DB.revs=d.revs||[];upgrade();if(d.settings)DB.settings=Object.assign(DB.settings,d.settings);
       save();V.client=null;V.tab="todo";render();toast("Loaded "+DB.clients.length+" clients");
     }catch(e){alert("That file didn't look like a Caseload file.")}};rd.readAsText(f)};
   inp.click();
@@ -454,7 +593,9 @@ document.addEventListener("click",function(e){
   var b=e.target.closest("[data-a]");if(!b)return;
   var a=b.getAttribute("data-a"),v=b.getAttribute("data-v"),t=b.getAttribute("data-t");
   if(a==="bg"){if(e.target===b)closeSheet();return}
-  if(a==="tab"){V.tab=v;V.client=null;render();scrollTo(0,0);return}
+  if(a==="need"){V.need=v;render();scrollTo(0,0);return}
+  if(a==="needclose"){V.need=null;render();scrollTo(0,0);return}
+  if(a==="tab"){V.tab=v;V.client=null;V.need=null;V.rev=null;render();scrollTo(0,0);return}
   if(a==="open"||a==="openc"){V.client=v;V.cview="client";render();scrollTo(0,0);return}
   if(a==="openv"){V.client=v;V.cview="visits";render();scrollTo(0,0);return}
   if(a==="pick"){pickSheet();return}
@@ -477,7 +618,25 @@ document.addEventListener("click",function(e){
     toast("Visit logged for "+cn,function(){DB.visits=DB.visits.filter(function(x){return x.id!==nv.id})});return}
   if(a==="delv"){var gone=DB.visits.find(function(x){return x.id===v});DB.visits=DB.visits.filter(function(x){return x.id!==v});save();render();
     toast("Visit deleted",function(){DB.visits.push(gone)});return}
-  if(a==="addc"){clientSheet(null);return}
+  if(a==="addc"){V.afterAdd=null;clientSheet(null);return}
+  if(a==="addcr"){V.afterAdd="rev";clientSheet(null);return}
+  if(a==="addr"){revSheet(null);return}
+  if(a==="openr"){V.tab="revs";V.rev=v;V.client=null;render();scrollTo(0,0);return}
+  if(a==="closer"){V.rev=null;render();scrollTo(0,0);return}
+  if(a==="editr"){revSheet(DB.revs.find(function(x){return x.id===v}));return}
+  if(a==="saver"){
+    var rc=document.getElementById("rcid").value,rs=document.getElementById("rstart").value,rn=document.getElementById("rnote").value.trim();
+    if(!rc){alert("Pick a client");return}if(!rs){alert("Pick the start date");return}
+    if(v){Object.assign(DB.revs.find(function(x){return x.id===v}),{cid:rc,start:rs,note:rn})}
+    else DB.revs.push({id:uid(),cid:rc,start:rs,note:rn,done:{}});
+    save();closeSheet();V.tab="revs";V.client=null;render();toast(v?"Saved":"Revision started for "+DB.clients.find(function(x){return x.id===rc}).name);return}
+  if(a==="delr"){var gr=DB.revs.find(function(x){return x.id===v});if(!confirm("Delete this revision?"))return;
+    DB.revs=DB.revs.filter(function(x){return x.id!==v});V.rev=null;save();closeSheet();render();toast("Revision deleted",function(){DB.revs.push(gr)});return}
+  if(a==="rcheck"){var ri=revByKey(v);if(!ri)return;var k=ri.R.k,rv=ri.rv;rv.done[k]=iso(today());save();render();
+    toast(revDone(rv)?"Revision finished for "+ri.c.name+" 🎉":ri.R.name+" done for "+ri.c.name,function(){delete rv.done[k]});return}
+  if(a==="runcheck"){var ru=revByKey(v);if(!ru)return;var k2=ru.R.k,rv2=ru.rv,old2=rv2.done[k2];delete rv2.done[k2];save();render();
+    toast("Marked not done",function(){rv2.done[k2]=old2});return}
+  if(a==="icsr"){var ir=revByKey(v);if(ir)sendIcs([evForRv(ir)],"revision-"+ir.R.k+"-"+ir.c.name);return}
   if(a==="editc"){clientSheet(DB.clients.find(function(x){return x.id===v}));return}
   if(a==="lv"){[].forEach.call(document.querySelectorAll("#clevel button"),function(x){x.classList.remove("on")});b.classList.add("on");return}
   if(a==="sw"){b.classList.toggle("on");return}
@@ -487,21 +646,23 @@ document.addEventListener("click",function(e){
     var lv=document.querySelector("#clevel .on"),sp=document.getElementById("cspan").value;
     if(!sp){alert("Pick the span start date");return}
     var data={name:nm,level:lv?lv.getAttribute("data-v"):"L1",span:sp,dayProgram:document.getElementById("cdp").classList.contains("on"),notes:document.getElementById("cnotes").value.trim()};
-    if(v){Object.assign(DB.clients.find(function(x){return x.id===v}),data)}else{data.id=uid();DB.clients.push(data);V.client=data.id}
+    if(v){Object.assign(DB.clients.find(function(x){return x.id===v}),data)}
+    else{data.id=uid();DB.clients.push(data);if(V.afterAdd==="rev"){V.afterAdd=null;save();revSheet(null,data.id);toast("Client added");return}V.client=data.id}
     save();closeSheet();render();toast("Saved");return}
   if(a==="delc"){var c=DB.clients.find(function(x){return x.id===v});if(!confirm("Delete "+c.name+" and all their visits?"))return;
-    DB.clients=DB.clients.filter(function(x){return x.id!==v});DB.visits=DB.visits.filter(function(x){return x.cid!==v});
+    DB.clients=DB.clients.filter(function(x){return x.id!==v});DB.visits=DB.visits.filter(function(x){return x.cid!==v});DB.revs=DB.revs.filter(function(x){return x.cid!==v});
     Object.keys(DB.done).forEach(function(k){if(k.indexOf(v+"|")===0)delete DB.done[k]});save();closeSheet();V.client=null;render();toast("Client deleted");return}
   if(a==="ics1"){var pp=pwByKey(v);if(pp)sendIcs([evForPw(pp)],pp.T.k+"-"+pp.c.name);return}
   if(a==="icsv"){var cl=DB.clients.find(function(x){return x.id===v}),r=visitReqs(cl,today()).find(function(x){return x.r===t});if(r)sendIcs([evForVr(r)],"visit-"+cl.name);return}
   if(a==="icsall"){var td=today(),ev=[];DB.clients.forEach(function(c){
       paperwork(c,td).forEach(function(p){if(p.st!=="done"&&p.daysDue>=0&&p.daysDue<=60)ev.push(evForPw(p))});
       visitReqs(c,td).forEach(function(r){if(!r.met&&r.daysDue>=0&&r.daysDue<=60)ev.push(evForVr(r))});});
+    DB.revs.forEach(function(rv){revItems(rv,td).forEach(function(i){if(!i.done&&i.daysDue>=0)ev.push(evForRv(i))})});
     sendIcs(ev,"caseload-next-60-days");return}
   if(a==="export"){exportData();return}
   if(a==="import"){importData();return}
   if(a==="wipe"){if(confirm("Erase all clients, visits and checkmarks on this phone? Save a backup first if you're not sure.")&&confirm("Really erase everything?")){
-    DB={clients:[],visits:[],done:{},settings:{remind:3}};save();V.client=null;render()}return}
+    DB={clients:[],visits:[],done:{},revs:[],settings:{remind:3}};save();V.client=null;render()}return}
 });
 window.addEventListener("pageshow",function(){render()});
 document.addEventListener("visibilitychange",function(){if(!document.hidden)render()});
